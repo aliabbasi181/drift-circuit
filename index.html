@@ -518,7 +518,7 @@ function stepPhysics(dt) {
   const steerLoad = smooth(Math.abs(steerVis) * clamp(speed/18,0,1));
   let latKeep = surface === "road" ? lerp(0.02,0.55,steerLoad) : lerp(0.5,0.88,steerLoad);
   if (wet > 0 && surface === "road") latKeep = lerp(latKeep, 0.5, wet*0.55);
-  if (input.handbrake) { latKeep = Math.max(latKeep, 0.94); vF *= Math.pow(0.55, dt*60); }
+  if (input.handbrake) { latKeep = Math.max(latKeep, 0.9); vF *= Math.pow(0.82, dt*60); }   // softer handbrake
   vL *= Math.pow(latKeep, dt*60);
   car.vx = fx*vF + px*vL; car.vz = fz*vF + pz*vL;
 
@@ -532,7 +532,7 @@ function stepPhysics(dt) {
 
   const hF = groundH(car.x+fx*2, car.z+fz*2), hB = groundH(car.x-fx*2, car.z-fz*2);
   const slopeF = (hF - hB)/4; car.vx += fx*(-slopeF*16)*dt; car.vz += fz*(-slopeF*16)*dt;
-  if (input.handbrake && input.throttle <= 0 && Math.hypot(car.vx,car.vz) < 3.2) { car.vx = 0; car.vz = 0; }
+  if (input.handbrake && input.throttle <= 0 && Math.hypot(car.vx,car.vz) < 1.5) { car.vx = 0; car.vz = 0; }
 
   // obstacle hits — knock them flying and drive straight through (not solid)
   for (const o of OBST) { if (!o.placed || o.flying) continue; const dx = car.x-o.x, dz = car.z-o.z, min = o.r + 1.1; if (dx*dx+dz*dz < min*min) {
@@ -558,9 +558,16 @@ function stepPhysics(dt) {
 function updateWheels(dt) {
   const a = car.angle, ca = Math.cos(a), sa = Math.sin(a), fwd = car.vx*sa + car.vz*ca;
   const locked = input.handbrake && Math.abs(fwd) < 6, omega = locked ? 0 : fwd/TYRE_R;
+  let frY = 0, reY = 0, lY = 0, rY = 0;
   for (const w of wheels) { const wx = car.x + ca*w.lx + sa*w.lz, wz = car.z - sa*w.lx + ca*w.lz;
-    const ty = groundH(wx,wz) + TYRE_R - car.y; w.steer.position.y += (ty - w.steer.position.y)*Math.min(1, dt*12);
-    w.roll.rotation.x -= omega*dt; if (w.front) w.steer.rotation.y = -steerVis*0.5; }
+    const gy = groundH(wx, wz);
+    const ty = gy + TYRE_R - car.y; w.steer.position.y += (ty - w.steer.position.y)*Math.min(1, dt*12);
+    w.roll.rotation.x -= omega*dt; if (w.front) w.steer.rotation.y = -steerVis*0.5;
+    if (w.front) frY += gy; else reY += gy; if (w.lx < 0) lY += gy; else rY += gy;
+  }
+  // body plane from the four wheel contacts -> pitch/roll (nose up on climbs, lean on side-slopes)
+  car.terrPitch = Math.atan2(frY/2 - reY/2, 2.92);
+  car.terrRoll  = Math.atan2(rY/2 - lY/2, 2.04);
 }
 
 // ---- Audio -----------------------------------------------------------------
@@ -664,7 +671,10 @@ function updateLeaves(dt) { for (let i = 0; i < LEAF; i++) { const l = leafState
 function syncCar() {
   car.y = groundH(car.x, car.z); carGroup.position.set(car.x, car.y, car.z); carGroup.rotation.set(0, car.angle, 0);
   car.roll = lerp(car.roll||0, car.rollT||0, 0.14); car.pitch = lerp(car.pitch||0, car.pitchT||0, 0.14);
-  chassis.rotation.z = car.roll; chassis.rotation.x = car.pitch; chassis.position.y = -Math.abs(car.pitch)*0.15;
+  car.tPitch = lerp(car.tPitch||0, car.terrPitch||0, 0.15); car.tRoll = lerp(car.tRoll||0, car.terrRoll||0, 0.15);
+  chassis.rotation.x = car.pitch - car.tPitch;   // weight transfer + terrain slope
+  chassis.rotation.z = car.roll + car.tRoll;
+  chassis.position.y = -Math.abs(car.pitch)*0.15;
 }
 resetCar();
 let started = false, last = 0; const FIXED = 1/120;
