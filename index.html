@@ -39,6 +39,7 @@
   #wbtns button.on { background: rgba(46,166,255,.55); border-color: #8fe3ff; }
   #wbtns button:active, #reset:active { background: rgba(0,0,0,.5); }
   #reset { position: fixed; top: max(12px, env(safe-area-inset-top)); right: 14px; pointer-events: auto; }
+  #vignette { position: fixed; inset: 0; pointer-events: none; box-shadow: inset 0 0 200px 50px rgba(0,0,0,.42), inset 0 0 60px rgba(0,0,0,.18); }
   #flash { position: fixed; inset: 0; pointer-events: none; background: radial-gradient(circle, transparent 40%, rgba(255,40,20,.55)); opacity: 0; transition: opacity .25s; }
   #pops { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
   .pop { position: fixed; left: 50%; top: 58%; transform: translateX(-50%); font-family: system-ui, sans-serif;
@@ -76,6 +77,7 @@
 <button id="reset">↺ Restart</button>
 
 <div id="stick"></div><div id="knob"></div>
+<div id="vignette"></div>
 <div id="flash"></div>
 <div id="pops"></div>
 <div id="hint" class="ui">Hold = drive · drag L/R = steer · drag down = brake · NITRO button &nbsp;|&nbsp; ⌨ WASD · Space · Shift</div>
@@ -116,7 +118,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputEncoding = THREE.sRGBEncoding;
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.12;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.22;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8fc6e8);
@@ -146,7 +148,7 @@ const sun = new THREE.DirectionalLight(0xfff2d6, 1.15);
 sun.castShadow = true; sun.shadow.mapSize.set(2048,2048);
 sun.shadow.camera.near = 10; sun.shadow.camera.far = 170;
 const SH = 60; sun.shadow.camera.left=-SH; sun.shadow.camera.right=SH; sun.shadow.camera.top=SH; sun.shadow.camera.bottom=-SH;
-sun.shadow.bias = -0.0006; scene.add(sun); scene.add(sun.target);
+sun.shadow.bias = -0.0006; sun.shadow.radius = 3; scene.add(sun); scene.add(sun.target);
 
 const sunBall = new THREE.Mesh(new THREE.SphereGeometry(16,20,20), new THREE.MeshBasicMaterial({ color: 0xfff3bf, fog: false }));
 scene.add(sunBall);
@@ -214,33 +216,39 @@ function updateTerrain() {
   pos.needsUpdate = true; nor.needsUpdate = true; col.needsUpdate = true;
 }
 
-// ---- Streamed road strip (colours bake the markings) -----------------------
-const R_COLS = 6, R_MAXN = 96, R_VPN = R_COLS + 1;
-const roadPos = new Float32Array(R_MAXN*R_VPN*3), roadCol = new Float32Array(R_MAXN*R_VPN*3), roadNor = new Float32Array(R_MAXN*R_VPN*3);
-for (let i = 0; i < R_MAXN; i++) for (let j = 0; j <= R_COLS; j++) {
-  const o = (i*R_VPN + j)*3; let c = [0.21,0.22,0.24];
-  if (j === 0 || j === R_COLS) c = [0.9,0.92,0.94]; else if (j === R_COLS/2) c = [0.88,0.76,0.34];
-  roadCol[o]=c[0]; roadCol[o+1]=c[1]; roadCol[o+2]=c[2]; roadNor[o+1]=1;
+// ---- Streamed road strip (textured asphalt with thin lane markings) --------
+function makeAsphalt() {
+  const c = document.createElement("canvas"); c.width = 128; c.height = 512; const g = c.getContext("2d");
+  g.fillStyle = "#2a2d31"; g.fillRect(0,0,128,512);
+  for (let i = 0; i < 4200; i++) { g.fillStyle = Math.random()<0.5 ? "rgba(255,255,255,0.028)" : "rgba(0,0,0,0.06)"; g.fillRect(Math.random()*128, Math.random()*512, 2, 2); }
+  g.fillStyle = "#e9edef"; g.fillRect(7, 0, 5, 512); g.fillRect(116, 0, 5, 512);          // solid edge lines
+  g.fillStyle = "#e6c84e"; for (let y = 0; y < 512; y += 64) g.fillRect(61, y, 6, 34);      // dashed centre
+  const tex = new THREE.CanvasTexture(c); tex.wrapS = THREE.ClampToEdgeWrapping; tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8; tex.encoding = THREE.sRGBEncoding; return tex;
 }
+const asphaltTex = makeAsphalt();
+const R_COLS = 6, R_MAXN = 96, R_VPN = R_COLS + 1;
+const roadPos = new Float32Array(R_MAXN*R_VPN*3), roadNor = new Float32Array(R_MAXN*R_VPN*3), roadUV = new Float32Array(R_MAXN*R_VPN*2);
+for (let i = 0; i < R_MAXN; i++) for (let j = 0; j <= R_COLS; j++) roadNor[(i*R_VPN + j)*3 + 1] = 1;
 const roadIdx = [];
 for (let i = 0; i < R_MAXN-1; i++) for (let j = 0; j < R_COLS; j++) { const a=i*R_VPN+j, b=a+1, c=a+R_VPN, d=c+1; roadIdx.push(a,c,b, b,c,d); }
 const roadGeo = new THREE.BufferGeometry();
 roadGeo.setAttribute("position", new THREE.BufferAttribute(roadPos,3));
-roadGeo.setAttribute("color", new THREE.BufferAttribute(roadCol,3));
 roadGeo.setAttribute("normal", new THREE.BufferAttribute(roadNor,3));
+roadGeo.setAttribute("uv", new THREE.BufferAttribute(roadUV,2));
 roadGeo.setIndex(roadIdx);
-const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }));
+const road = new THREE.Mesh(roadGeo, new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.9, side: THREE.DoubleSide }));
 road.receiveShadow = true; road.frustumCulled = false; scene.add(road);
 function updateRoad() {
   const start = Math.max(0, carNodeIdx - 12), nn = Math.min(R_MAXN, path.length - start);
   for (let i = 0; i < nn; i++) {
     const p = path[start+i], nx = Math.cos(p.h), nz = -Math.sin(p.h);
     for (let j = 0; j <= R_COLS; j++) {
-      const t = (j/R_COLS)*2 - 1, wx = p.x + nx*ROAD_HW*t, wz = p.z + nz*ROAD_HW*t, o = (i*R_VPN + j)*3;
+      const t = (j/R_COLS)*2 - 1, wx = p.x + nx*ROAD_HW*t, wz = p.z + nz*ROAD_HW*t, o = (i*R_VPN + j)*3, uo = (i*R_VPN + j)*2;
       roadPos[o] = wx; roadPos[o+1] = groundH(wx,wz) + 0.05; roadPos[o+2] = wz;
+      roadUV[uo] = j/R_COLS; roadUV[uo+1] = p.s / 14;
     }
   }
-  roadGeo.attributes.position.needsUpdate = true;
+  roadGeo.attributes.position.needsUpdate = true; roadGeo.attributes.uv.needsUpdate = true;
   roadGeo.setDrawRange(0, Math.max(0, (nn-1)*R_COLS*6));
 }
 
@@ -266,32 +274,43 @@ function roundCanopy() { const cfg=[[0,0.4,0,2],[1.1,0.8,0.3,1.3],[-0.9,0.7,-0.5
 const dummy = new THREE.Object3D();
 
 // ---- Streamed trees (instanced pool) ---------------------------------------
-const TREE_N = 130;
+const TREE_N = 175;
 const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.2,0.32,2.7,7), new THREE.MeshStandardMaterial({ color: 0x5b3f28, roughness: 1 }), TREE_N);
-const canopies = new THREE.InstancedMesh(roundCanopy(), windMat(0x356e33), TREE_N);
+const canopies = new THREE.InstancedMesh(roundCanopy(), windMat(0xffffff), TREE_N);
 trunks.castShadow = true; canopies.castShadow = true; scene.add(trunks); scene.add(canopies);
+const _gc = new THREE.Color();
 const treeInfo = [];
 for (let i = 0; i < TREE_N; i++) treeInfo.push({ s: -1 });
 function placeTree(i, s) {
   const ni = nodeNearS(s); if (ni < 0) return; const p = path[ni];
-  const side = rand() < 0.5 ? 1 : -1, lat = side*(ROAD_HW + rrange(4, 46));
-  const nx = Math.cos(p.h), nz = -Math.sin(p.h), x = p.x + nx*lat, z = p.z + nz*lat, y = groundH(x,z), sc = rrange(0.8,1.7);
+  const side = rand() < 0.5 ? 1 : -1, lat = side*(ROAD_HW + rrange(4, 52));
+  const nx = Math.cos(p.h), nz = -Math.sin(p.h), x = p.x + nx*lat, z = p.z + nz*lat, y = groundH(x,z), sc = rrange(0.8,1.8);
   treeInfo[i].s = s; treeInfo[i].x = x; treeInfo[i].z = z;
   dummy.position.set(x, y+1.35*sc, z); dummy.rotation.set(0, rand()*TAU, 0); dummy.scale.setScalar(sc); dummy.updateMatrix(); trunks.setMatrixAt(i, dummy.matrix);
   dummy.position.set(x, y+2.7*sc, z); dummy.updateMatrix(); canopies.setMatrixAt(i, dummy.matrix);
+  canopies.setColorAt(i, _gc.setHSL(0.27 + rrange(-0.03,0.04), 0.5, rrange(0.26,0.44)));   // varied greens
 }
 
 // ---- Streamed buildings (instanced pool) -----------------------------------
-const BLD_N = 22;
-const bld = new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({ color: 0x9aa3ad, roughness: 0.9, metalness: 0.05 }), BLD_N);
-bld.castShadow = true; scene.add(bld);
+const BLD_N = 26;
+function makeFacade() {
+  const c = document.createElement("canvas"); c.width = 64; c.height = 96; const g = c.getContext("2d");
+  g.fillStyle = "#c4c9d0"; g.fillRect(0,0,64,96);
+  for (let y = 7; y < 90; y += 12) for (let x = 6; x < 58; x += 12) { g.fillStyle = Math.random() < 0.45 ? "#39485a" : "#9fd6f2"; g.fillRect(x, y, 8, 8); }
+  const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+}
+const bld = new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({ map: makeFacade(), roughness: 0.82, metalness: 0.08 }), BLD_N);
+bld.castShadow = true; bld.receiveShadow = true; scene.add(bld);
+const bldTints = [0xffffff, 0xd8cbb2, 0xc2cede, 0xe0c9c0, 0xc6d6c4];
+const _bc = new THREE.Color();
 const bldInfo = []; for (let i = 0; i < BLD_N; i++) bldInfo.push({ s: -1 });
 function placeBuilding(i, s) {
   const ni = nodeNearS(s); if (ni < 0) return; const p = path[ni];
   const side = rand() < 0.5 ? 1 : -1, lat = side*(ROAD_HW + rrange(28, 95));
   const nx = Math.cos(p.h), nz = -Math.sin(p.h), x = p.x + nx*lat, z = p.z + nz*lat, y = groundH(x,z);
-  const w = rrange(8,18), h = rrange(9,34), dp = rrange(8,18);
+  const w = rrange(8,18), h = rrange(10,40), dp = rrange(8,18);
   bldInfo[i].s = s; dummy.position.set(x, y + h/2 - 0.3, z); dummy.rotation.set(0, rand()*TAU, 0); dummy.scale.set(w,h,dp); dummy.updateMatrix(); bld.setMatrixAt(i, dummy.matrix);
+  bld.setColorAt(i, _bc.setHex(bldTints[Math.floor(rand()*bldTints.length)]));
 }
 
 // ---- Obstacles (cones / barriers / rocks) with collision -------------------
@@ -340,8 +359,10 @@ function streamWorld() {
   spawnObstacles();
   for (let i = 0; i < TREE_N; i++) if (treeInfo[i].s < carS - 40 || treeInfo[i].s < 0) { placeTree(i, carS + rrange(40, 280)); }
   trunks.instanceMatrix.needsUpdate = true; canopies.instanceMatrix.needsUpdate = true;
+  if (canopies.instanceColor) canopies.instanceColor.needsUpdate = true;
   for (let i = 0; i < BLD_N; i++) if (bldInfo[i].s < carS - 60 || bldInfo[i].s < 0) { placeBuilding(i, carS + rrange(60, 320)); }
   bld.instanceMatrix.needsUpdate = true;
+  if (bld.instanceColor) bld.instanceColor.needsUpdate = true;
 }
 
 // ---- Skid marks + particles ------------------------------------------------
