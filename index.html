@@ -305,7 +305,7 @@ function makeObstacle(kind) {
   else if (kind === 1) { mesh = new THREE.Mesh(barGeo, barMat); r = 1.6; }
   else { mesh = new THREE.Mesh(rockGeo, rockMat); r = 1.1; }
   mesh.castShadow = true; mesh.visible = false; scene.add(mesh);
-  return { mesh, r, kind, s: -1, x: 0, z: 0, placed: false };
+  return { mesh, r, kind, s: -1, x: 0, z: 0, placed: false, flying: false, vx: 0, vy: 0, vz: 0, spin: 0, ttl: 0 };
 }
 for (let i = 0; i < 30; i++) OBST.push(makeObstacle(i % 3));
 let obsCursorS = 40;
@@ -319,13 +319,21 @@ function placeObstacle(ob, s) {
   const x = p.x + nx*lat, z = p.z + nz*lat, y = groundH(x,z);
   ob.s = s; ob.x = x; ob.z = z; ob.placed = true;
   const hh = ob.kind === 0 ? 0.6 : ob.kind === 1 ? 0.55 : 0.5;
-  ob.mesh.position.set(x, y + hh, z); ob.mesh.rotation.y = ob.kind === 1 ? p.h : rand()*TAU; ob.mesh.visible = true;
+  ob.mesh.position.set(x, y + hh, z); ob.mesh.rotation.set(0, ob.kind === 1 ? p.h : rand()*TAU, 0); ob.mesh.visible = true; ob.flying = false;
 }
 function spawnObstacles() {
   while (obsCursorS < carS + 300) {
     const ob = OBST.find(o => !o.placed || o.s < carS - 26); if (!ob) break;
     placeObstacle(ob, obsCursorS);
     obsCursorS += Math.max(15, 46 - carS/500);
+  }
+}
+function updateFlyingObstacles(dt) {
+  for (const o of OBST) { if (!o.flying) continue;
+    o.mesh.position.x += o.vx*dt; o.mesh.position.z += o.vz*dt; o.mesh.position.y += o.vy*dt; o.vy -= 20*dt;
+    o.mesh.rotation.x += o.spin*dt; o.mesh.rotation.z += o.spin*0.7*dt;
+    o.x = o.mesh.position.x; o.z = o.mesh.position.z; o.ttl -= dt;
+    if (o.ttl <= 0 || o.mesh.position.y < groundH(o.mesh.position.x, o.mesh.position.z) - 2) { o.flying = false; o.placed = false; o.mesh.visible = false; }
   }
 }
 function streamWorld() {
@@ -505,14 +513,14 @@ function stepPhysics(dt) {
   const slopeF = (hF - hB)/4; car.vx += fx*(-slopeF*16)*dt; car.vz += fz*(-slopeF*16)*dt;
   if (input.handbrake && input.throttle <= 0 && Math.hypot(car.vx,car.vz) < 3.2) { car.vx = 0; car.vz = 0; }
 
-  // obstacle collisions
-  if (crashCd > 0) crashCd -= dt;
-  for (const o of OBST) { if (!o.placed) continue; const dx = car.x-o.x, dz = car.z-o.z, min = o.r + 1.1; if (dx*dx+dz*dz < min*min) {
-    const d = Math.hypot(dx,dz) || 0.001, nx = dx/d, nz = dz/d; car.x = o.x + nx*min; car.z = o.z + nz*min;
-    const dot = car.vx*nx + car.vz*nz, hit = o.kind === 1 ? 0.25 : 0.5;
-    car.vx = (car.vx - 1.6*dot*nx)*hit; car.vz = (car.vz - 1.6*dot*nz)*hit;
-    for (let k = 0; k < 6; k++) spawnParticle(o.x+rrange(-1,1), groundH(o.x,o.z)+0.6, o.z+rrange(-1,1), true);
-    if (crashCd <= 0) { crashFlash(); popText("CRASH!", "#ff6a3c"); driftScore = Math.max(0, driftScore - 40); crashCd = 0.6; }
+  // obstacle hits — knock them flying and drive straight through (not solid)
+  for (const o of OBST) { if (!o.placed || o.flying) continue; const dx = car.x-o.x, dz = car.z-o.z, min = o.r + 1.1; if (dx*dx+dz*dz < min*min) {
+    const slow = o.kind === 1 ? 0.72 : o.kind === 2 ? 0.86 : 0.94;   // barrier scrubs most, cone barely
+    car.vx *= slow; car.vz *= slow;
+    o.flying = true; o.ttl = 1.4; o.vx = car.vx*0.5 + rrange(-4,4); o.vz = car.vz*0.5 + rrange(-4,4); o.vy = 4 + Math.random()*5; o.spin = rrange(-10,10);
+    for (let k = 0; k < 7; k++) spawnParticle(o.x+rrange(-1,1), groundH(o.x,o.z)+0.6, o.z+rrange(-1,1), true);
+    if (o.kind === 1) crashFlash();
+    popText(o.kind === 1 ? "SMASH!" : "HIT!", "#ff9a3c"); driftScore = Math.max(0, driftScore - (o.kind === 1 ? 20 : 6));
   } }
 
   slipAmount = Math.abs(vL);
@@ -644,6 +652,7 @@ function frame(t) {
   requestAnimationFrame(frame);
   if (!last) last = t; let dt = (t - last)/1000; last = t; if (dt > 0.1) dt = 0.1; const wdt = dt || 0.016;
   if (started) { maintainPath(); let rem = dt; while (rem > 1e-5) { const s = Math.min(FIXED, rem); stepPhysics(s); rem -= s; } streamWorld(); if (maxS > bestDist) bestDist = maxS; }
+  updateFlyingObstacles(wdt);
   syncCar(); updateWheels(wdt); updateRoad(); updateTerrain();
   updateEnvironment(wdt); updateRain(wdt); updateBoostFX(); updateCamera(wdt); updateHUD(); drawMinimap();
   wind.time += wdt; wind.strength = clamp(0.5 + 0.5*Math.sin(wind.time*0.3) + 0.3*Math.sin(wind.time*0.13+1), 0.12, 1.4);
