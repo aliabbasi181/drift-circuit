@@ -842,11 +842,14 @@ function updateLap(dt) {
 }
 
 // ---- Camera ----------------------------------------------------------------
-let camYaw = car.angle;
+let camYaw = car.angle, camReverse = false;
 const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
 function updateCamera(dt) {
   const speed = Math.hypot(car.vx, car.vz);
-  const target = car.angle;   // follow heading only — no velocity-noise jitter
+  // reversing? swing the camera to the front so you look back over the car (hysteresis avoids flip-flop)
+  const fwdVel = car.vx * Math.sin(car.angle) + car.vz * Math.cos(car.angle);
+  if (fwdVel < -1.2) camReverse = true; else if (fwdVel > 0.6) camReverse = false;
+  const target = camReverse ? car.angle + Math.PI : car.angle;
   let d = target - camYaw; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU;
   camYaw += d * Math.min(1, dt * 4);
   const dirx = Math.sin(camYaw), dirz = Math.cos(camYaw);
